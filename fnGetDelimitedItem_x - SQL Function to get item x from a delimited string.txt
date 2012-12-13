@@ -1,0 +1,36 @@
+create function dbo.fnGetDelimitedItem_x
+	(
+		@DelimitedString	varchar(500),
+		@Delimiter			varchar(1),
+		@Item				smallint
+	)
+returns varchar(100)
+as
+begin
+--	select	@DelimitedString	= '1:14:66:9:3033:0x00055C9A:0x00EB8723',
+--			@Delimiter			= ':',
+--			@Item				= 8
+
+	declare	@Found		smallint,
+			@TotalItems	smallint,
+			@Output		varchar(100)
+
+	select	@Found				= 1,
+			@DelimitedString	= @DelimitedString + @Delimiter,
+			@TotalItems			= len(@DelimitedString) - len(replace(@DelimitedString, @Delimiter, ''))
+
+	if @TotalItems > @Item - 1
+		begin
+			while @Found < @Item
+				select	@DelimitedString = right(@DelimitedString, len(@DelimitedString) - charindex(@Delimiter, @DelimitedString)),
+						@Found = @Found + 1
+
+			select	@DelimitedString = left(@DelimitedString, charindex(@Delimiter, @DelimitedString) - 1)
+			select	@Output = @DelimitedString
+		end
+	else
+		select	@Output = 'There are only ' + convert(varchar(10), @TotalItems) + ' items in the delimited string and you requested item #' + convert(varchar(5), @Item)
+
+	return (@Output)
+
+end

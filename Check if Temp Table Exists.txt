@@ -1,0 +1,2 @@
+if  object_id('tempdb..#a') is not null
+	drop table #a

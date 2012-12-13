@@ -1,0 +1,39 @@
+-- List Tables in All Databases With Size Information
+	declare	@sql				nvarchar(4000),
+			@ObjectToFind		varchar(250),	-- name of object to search for
+			@DatabaseName		varchar(250)	-- name of database to limit search to
+
+	select	@ObjectToFind		= 'tmp%',	--'%7digit%'
+			@DatabaseName		= '.'		-- use . for current database
+
+-- returns size information for all tables in all databases
+	if  object_id('tempdb..#t') is not null
+		drop table #t
+	create table #t(d nvarchar(max),t nvarchar(max),r int,x nvarchar(100),s nvarchar(100),y nvarchar(100),z nvarchar(100))
+	declare @s nvarchar(max)
+	set @s=replace('if !~! not in (!master!,!model!,!msdb!,!tempdb!) exec [~].dbo.sp_msforeachtable "insert into #t(t, r,x,s,y,z) exec [~].dbo.sp_spaceused !?!"','!',char(39))
+	exec sp_MSForEachDB @command1=@s, @command2="update #t set d='~' where d is null", @replacechar='~'
+	--	select top(5) d as base, t as [table], s as size, r as rows from #t order by Cast(LEFT(s,len(s)-3) as int) desc
+	select	d DatabaseName,
+			t TableName,
+			replace(convert(varchar(25), convert(money, r), 1), '.00', '') RecordCount,
+			replace(convert(varchar(25), convert(money, replace(x, ' KB', '')), 1), '.00', '') Reserved_KB,
+			replace(convert(varchar(25), convert(money, replace(s, ' KB', '')), 1), '.00', '') Data_KB,
+			replace(convert(varchar(25), convert(money, replace(y, ' KB', '')), 1), '.00', '') Index_KB,
+			replace(convert(varchar(25), convert(money, replace(z, ' KB', '')), 1), '.00', '') Unused_KB,
+			'select top 10 * from ' + d + '..' + t + ' with (nolock)' SelectSQL,
+			r RecordCount,
+			replace(x, ' KB', '') Reserved_KB,
+			replace(s, ' KB', '') Data_KB,
+			replace(y, ' KB', '') Index_KB,
+			replace(z, ' KB', '') Unused_KB
+	from	#t
+	where	(t like @ObjectToFind or @ObjectToFind = '')
+	and		d =	case
+					when @DatabaseName = '.' then DB_Name()
+					else coalesce(nullif(@DatabaseName, ''), d)
+				end
+	order by
+			cast(replace(x, ' KB', '') as int) desc
+
+	--drop table #t

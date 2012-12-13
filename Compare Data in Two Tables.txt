@@ -1,0 +1,123 @@
+-- compare data in two tables
+set nocount on
+set concat_null_yields_null off
+
+declare	@Table1			varchar(100),
+		@Table2			varchar(200),
+		@x				int,
+		@v				char(22),        -- Junk value used if data is null so coalesce(Table1.SomeNumericField, @Garbage) <> coalesce(Table2.SomeNumericField, @Garbage) works correctly
+		@Key			varchar(500),    -- ignored if @CustomFrom is used
+		@Ignore			varchar(500),    -- columns to ignore - mostly used for UpdateDates, etc.
+		@CustomFrom		varchar(500),    -- only use if you need to join to additional tables to match Table1 and Table2 together
+		@OutputDetails	bit,
+		@OutputSummary	bit
+
+select	@Table1			= 'Table1',
+		@Table2			= 'Table2',
+		@v				= '-9876543210.0123456789',    -- must be a valid number, and one not found within your data!
+		@Key			= 'Field1 = Field3, Field3 = Field9',
+		@Ignore			= 'Table1ID,Table2ID', --,SourceRecordID,UpdateDate,BatchID,CIC,CDRStatsUpdateFlag,AddedToEMIInd,StaffID',
+		@CustomFrom		= 'from Table1 t1 inner join Table3 t3 on t1.Table3ID = t3.Table3ID inner join Table2 as t2 on t2.Table3ID = t3.Table3ID', -- optional parm, overrides @Key, and used when a 3rd table is required for joining
+		@OutputDetails	= 0,
+		@OutputSummary	= 1
+
+if not exists (select name from sys.tables where name = @Table1)
+	begin
+		select @Table1 + ' does not exist, are you in the right database?'
+		return
+	end
+
+if not exists (select name from sys.tables where name = @Table2)
+	begin
+		select @Table2 + ' does not exist, are you in the right database?'
+		return
+	end
+
+if len(ltrim(@CustomFrom)) = 0
+	select @CustomFrom = null
+
+select	@Key = 't1.' + ltrim(@Key)
+select	@Key = replace(@Key, ',', ', t1.')
+select	@Key = replace(@Key, 't1. ', 't1.')
+select	@Key = replace(@Key, '=', '= t2.')
+select	@Key = replace(@Key, 't2. ', 't2.')
+select	@Key = replace(@Key, ', ', ' and ')
+
+select	@Ignore = ',' + replace(@Ignore, ' ', '') + ','
+
+declare	@SQL varchar(max)
+
+select	@SQL = @SQL +	case
+							when c.system_type_id in (48,52,56,59,60,62,104,106,108,122,127) then ' case when coalesce(t1.' + c.name + ', ' + @v + ') <> coalesce(t2.' + c.name + ', ' + @v + ') then ''' + c.name + ''' + '', '' else '''' end '
+							when c.system_type_id in (58,61) then ' case when convert(datetime, coalesce(t1.' + c.name + ', ' + @v + ')) <> convert(datetime, coalesce(t2.' + c.name + ', ' + @v + ')) then ''' + c.name + ''' + '', '' else '''' end '
+							else ' case when coalesce(t1.' + c.name + ', ''' + @v + ''') <> coalesce(t2.' + c.name + ', ''' + @v + ''') then ''' + c.name + ''' +  '', '' else '''' end '
+						end + '+'
+from	sys.tables t
+		inner join sys.columns c on t.object_id = c.object_id
+where	t.name in (@Table1, @Table2)
+and		charindex(',' + c.name + ',', @Ignore) = 0
+group by
+		c.name,
+		c.system_type_id,
+		c.column_id
+having	count(*) = 2
+
+select	@SQL = left(@SQL, len(@SQL) - 2)
+
+select	@SQL = 'select ' + @SQL
+select	@SQL = @SQL + ' as Cols_That_Dont_Match, t1.*, t2.* '
+select	@SQL = @SQL + ' ' + coalesce(@CustomFrom, ' from ' + @Table1 + ' t1 inner join ' + @Table2 + ' t2 on ' + @Key) + ' where '
+
+select	@SQL = @SQL +	case
+							when c.system_type_id in (48,52,56,59,60,62,104,106,108,122,127) then 'coalesce(t1.' + c.name + ', 0) <> coalesce(t2.' + c.name + ', 0) or '
+							when c.system_type_id in (58,61) then 'Convert(datetime,Coalesce(t1.' + c.name + ', 0)) <> convert(datetime, coalesce(t2.' + c.name + ', 0)) or '
+							else 'coalesce(t1.' + c.name + ', ''0'') <> coalesce(t2.' + c.name + ', ''0'') or '
+						end
+from	sys.tables t
+		inner join sys.columns c on t.object_id = c.object_id
+where	t.name in (@Table1, @Table2)
+and		charindex(',' + c.name + ',', @Ignore) = 0
+group by
+		c.name,
+		c.system_type_id
+having	count(*) = 2
+
+select	@SQL = left(@SQL, len(@SQL) - 3)
+if @OutputDetails = 1
+	begin
+		select @SQL as 'SQL Statement being executed'
+		exec(@SQL)
+	end
+
+if @OutputSummary = 1
+	begin
+		-- produce distinct list of problematic columns
+		select	@SQL = replace(@SQL, ', t1.*, t2.*', '')
+		select	@SQL = replace(@SQL, 'select ', 'select distinct ')
+
+		if not object_id('tempdb..#tbBadCols') is null drop table #tbBadCols
+			create table #tbBadCols (BadColID int identity, Cols_That_Dont_Match varchar(1000))
+		insert into #tbBadCols (Cols_That_Dont_Match)
+		exec(@SQL)
+
+		select	@SQL = ''
+		select	@SQL = @SQL + Cols_That_Dont_Match
+		from	#tbBadCols
+
+		if not object_id('tempdb..#Numbers') is null drop table #Numbers
+			create table #Numbers (Number int)
+		select	@x = 1
+		while	@x <= 500
+			begin
+				insert into #Numbers (Number) values (@x)
+				select @x = @x + 1
+			end
+
+		select	distinct substring(',' + @SQL + ',', Number + 1,
+				charindex(',', ',' + @SQL + ',', Number + 1) - Number - 1) as List_Of_Distinct_Cols_That_Dont_Match
+		from	#Numbers
+		where	Number <= len(',' + @SQL + ',') - 1
+		and		substring(',' + @SQL + ',', Number, 1) = ','
+		order by
+				List_Of_Distinct_Cols_That_Dont_Match
+	end

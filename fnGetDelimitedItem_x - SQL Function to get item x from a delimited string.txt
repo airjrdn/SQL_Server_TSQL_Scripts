@@ -1,7 +1,7 @@
-create function dbo.fnGetDelimitedItem_x
+CREATE function [dbo].[fnGetDelimitedItem_x]
 	(
-		@DelimitedString	varchar(500),
-		@Delimiter			varchar(1),
+		@DelimitedString	varchar(5000),
+		@Delimiter			varchar(10),
 		@Item				smallint
 	)
 returns varchar(100)
@@ -22,7 +22,7 @@ begin
 	if @TotalItems > @Item - 1
 		begin
 			while @Found < @Item
-				select	@DelimitedString = right(@DelimitedString, len(@DelimitedString) - charindex(@Delimiter, @DelimitedString)),
+				select	@DelimitedString = right(@DelimitedString, len(@DelimitedString) - charindex(@Delimiter, @DelimitedString) - len(@Delimiter) + 1),
 						@Found = @Found + 1
 
 			select	@DelimitedString = left(@DelimitedString, charindex(@Delimiter, @DelimitedString) - 1)

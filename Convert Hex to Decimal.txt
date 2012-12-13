@@ -1,0 +1,3 @@
+declare	@blah char(12)    
+set		@blah = 'DDDDDD'    
+select	convert(varbinary, convert(uniqueidentifier, left('00000000-0000-0000-0000-000000000000', 36 - len(@blah)) + @blah)) % 65536000

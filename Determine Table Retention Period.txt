@@ -1,0 +1,130 @@
+/*
+	 setup environment
+	 setup vars
+	 setup test data
+	 store names of date columns in temp table
+	 optionally remove non-indexed date columns
+	 loop through date columns
+	 get an average record count while attempting to ignore stragglers
+*/
+
+-- setup environment
+	set concat_null_yields_null off
+	if  object_id('tempdb..#output') is not null
+		drop table #output
+
+-- setup vars
+	declare	@Tablename				nvarchar(500),
+			@sql					nvarchar(max),
+			@avg					bigint,
+			@UseIndexedByOnly		bit,
+			@ColList				varchar(500),
+			@IndexHint				varchar(250),
+			@Debug					bit
+
+-- setup test data
+	select	@UseIndexedByOnly	= 0,												/************ user variable here ************/
+			@Tablename			= 'tbRealTimeLookup',	--'tbRealTimeLookup'		/************ user variable here ************/
+			@Debug				= 0						-- enable additional output	/************ user variable here ************/
+
+begin try
+	-- 1.	store names of date columns in temp table
+		if  object_id('tempdb..#DateColumns') is not null
+			drop table #DateColumns
+		select	distinct c.Name
+		into	#DateColumns
+		from	syscolumns c
+				inner join sysobjects o on c.id = o.id
+		where	o.name = @Tablename
+		and		c.xtype in (58, 61)	-- smalldatetime, datetime
+
+	-- optionally remove non-indexed date columns
+		if @UseIndexedByOnly = 1
+			begin
+				if  object_id('tempdb..#IndexCols') is not null
+					drop table #IndexCols
+
+				create table #IndexCols (IndexName varchar(250), IndexDescription varchar(1000), IndexKeys varchar(1000))
+
+				insert into #IndexCols (IndexName, IndexDescription, IndexKeys)
+				exec sys.sp_helpindex @objname = @Tablename
+				if @Debug = 1
+					select * from #IndexCols
+
+				delete	d
+				from	#DateColumns d
+						left join #IndexCols i on charindex(d.name + ',', i.IndexKeys + ',') = 1
+				where	i.IndexKeys is null				
+				if @Debug = 1
+					select * from #DateColumns
+			end
+
+	-- loop through date columns
+		declare DateColumnCursor cursor for
+			select	name
+			from	#DateColumns
+
+		open DateColumnCursor
+
+		fetch	next from DateColumnCursor
+		into	@sql
+		while	@@fetch_status = 0
+		begin
+			-- dynamically build record count query using the current date column
+				if @UseIndexedByOnly = 1
+					begin
+						select	@IndexHint = ', index(' + IndexName + ')'
+						from	#IndexCols
+						where	IndexKeys like @sql + '%'
+					end
+				else
+					begin
+						select	@IndexHint = ''
+					end
+				select	@sql = 'select ' + char(39) + @sql + char(39) + ', ' + 'convert(date, ' + @sql + ')' + ', count(*) from ' + @Tablename + ' with(nolock' + @IndexHint + ') group by ' + 'convert(date, ' + @sql + ')'-- + ' order by ' + @sql
+
+				if @Debug = 1
+					select	@sql
+
+			-- insert the record count query results into a temp table
+				if  object_id('tempdb..#temp') is not null
+					drop table #temp
+				create table #temp (DateCol varchar(250), DateValue datetime, RecCount bigint)
+				
+				insert into #temp exec sp_executesql @sql
+
+			-- get an average record count while attempting to ignore stragglers
+				select @avg = avg(RecCount) from #temp
+				select @avg = avg(RecCount) from #temp where RecCount >= @avg * .25
+				
+			-- populate #output
+				--if  object_id('tempdb..#output') is not null
+				--	drop table #output
+
+				if  object_id('tempdb..#output') is null
+					create table #output (BasedOn varchar(250), EstimatedRetentionPeriod int)
+
+				insert	into #output (BasedOn, EstimatedRetentionPeriod)
+				select	DateCol,
+						count(*)
+				from	#temp
+				where	RecCount >= @avg * .50
+				group by
+						DateCol
+
+			fetch next from DateColumnCursor into @sql
+		end
+
+	-- output
+		select	*
+		from	#output
+end try
+
+begin catch
+	select	error_number() AS ErrorNumber,
+			error_message() AS ErrorMessage
+end catch
+
+-- cleanup
+	close DateColumnCursor
+	deallocate DateColumnCursor
